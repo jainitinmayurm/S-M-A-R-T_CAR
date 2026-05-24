@@ -117,8 +117,13 @@ void setup() {
   Serial.begin(115200);
   Serial.println(F("\n===== Jai RC Rover — Main ESP32 Hub ====="));
 
+  /* ── High-Z boot delay — prevent 3.3V TX leakage into Arduino ── */
+  pinMode(TXD2, INPUT);
+  delay(3000);
+
   /* ── UART to Arduino & CAM ── */
   Serial2.begin(9600,   SERIAL_8N1, RXD2, TXD2);
+  while (Serial2.available()) Serial2.read();      /* flush boot garbage */
   Serial1.begin(115200, SERIAL_8N1, RXD1, TXD1);
 
   /* ── Wi-Fi Soft-AP ── */

@@ -220,7 +220,8 @@ static void activeDetour() {
   espSerial.println("P");
   delay(250);
 
-  /* ── 2. Servo sweep ── */
+  /* ── 2. Servo sweep (attach → sweep → detach to prevent jitter) ── */
+  scanServo.attach(SERVO_PIN);
   scanServo.write(90);  delay(350);
 
   scanServo.write(0);   delay(500);       /* look LEFT  */
@@ -230,6 +231,7 @@ static void activeDetour() {
   long distRight = pingCm();
 
   scanServo.write(90);  delay(300);       /* re-centre */
+  scanServo.detach();
 
   /* ── Decide open side ── */
   bool goRight = (distRight >= distLeft);
@@ -297,6 +299,9 @@ static void activeDetour() {
   turnA90();                             /* now facing original heading */
   delay(150);
 
+  /* Flush stale serial commands accumulated during blocking detour */
+  while (espSerial.available()) espSerial.read();
+
   /* Signal ESP32 to resume RTH stack timer */
   espSerial.println("R");
 }
@@ -315,7 +320,13 @@ static void sendTelemetry() {
 /* ══════════════════════════════════════════════════════════ */
 void setup() {
   Serial.begin(9600);                    /* debug monitor              */
+
+  /* ── High-Z boot delay — prevent 5V TX leakage into ESP32 ── */
+  pinMode(A3, INPUT);
+  delay(3000);
+
   espSerial.begin(9600);                 /* link to Main ESP32         */
+  while (espSerial.available()) espSerial.read();  /* flush boot garbage */
 
   /* IR sensors — digital inputs */
   pinMode(IR_LEFT,  INPUT);
@@ -326,9 +337,11 @@ void setup() {
   pinMode(US_ECHO, INPUT);
   digitalWrite(US_TRIG, LOW);
 
-  /* Servo */
+  /* Servo — attach, centre, then detach to prevent jitter */
   scanServo.attach(SERVO_PIN);
-  scanServo.write(90);                   /* centre */
+  scanServo.write(90);
+  delay(500);
+  scanServo.detach();
 
   /* Motors — default speed, stopped */
   setAllSpeed(curSpeed);
