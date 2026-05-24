@@ -50,8 +50,7 @@
 
 /* ─── AP Configuration ─────────────────────────────────────── */
 static const char* AP_SSID = "Jai_RC_Rover";
-/* Open network for easy CAM & client association.              */
-/* Add a ≥8-char password here if WPA2 is desired.             */
+static const char* AP_PASS = "password123";
 
 static const IPAddress AP_IP(10, 10, 10, 10);
 static const IPAddress AP_GW(10, 10, 10, 1);
@@ -126,13 +125,13 @@ void setup() {
   WiFi.mode(WIFI_AP);
   WiFi.setSleep(false);                  /* CRITICAL — keeps AP stable */
   WiFi.softAPConfig(AP_IP, AP_GW, AP_SUB);
-  WiFi.softAP(AP_SSID);                 /* open network                */
+  WiFi.softAP(AP_SSID, AP_PASS);
   Serial.printf("[WIFI] SSID : %s\n", AP_SSID);
   Serial.printf("[WIFI] IP   : %s\n", WiFi.softAPIP().toString().c_str());
 
   /* ── HTTP — serve the control page ── */
   httpServer.on("/", []() {
-    httpServer.send_P(200, PSTR("text/html"), MAIN_page);
+    httpServer.send_P(200, PSTR("text/html"), index_html);
   });
   httpServer.begin();
   Serial.println(F("[HTTP] Listening on :80"));
