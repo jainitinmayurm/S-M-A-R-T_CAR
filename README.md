@@ -55,6 +55,8 @@ graph LR
 | M4 | Back-Right | `mBR(4)` |
 | SERVO_1 | Ultrasonic sweep | Pin 10 |
 
+4,1,2,3 for now
+
 ### Main ESP32 Pins
 
 | GPIO | Function | Wire To |
