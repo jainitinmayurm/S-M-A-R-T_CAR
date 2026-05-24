@@ -408,5 +408,6 @@ static void toArduino(char c) {
 }
 
 static void broadcast(const String &s) {
-  wsServer.broadcastTXT(s);
+  String msg = s;                        /* mutable copy for library API */
+  wsServer.broadcastTXT(msg);
 }
