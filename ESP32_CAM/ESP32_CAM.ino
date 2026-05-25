@@ -86,6 +86,7 @@ static int     camError    = 0;          /* esp_err_t from init */
 static char    camSensor[32] = "unknown";
 static bool    hasPSRAM    = false;
 static volatile unsigned long frameCount = 0;
+static volatile int nullFrameCount = 0;         /* dead-sensor watchdog */
 static unsigned long bootTime = 0;
 
 static httpd_handle_t stream_httpd = NULL;
@@ -122,10 +123,18 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   while (true) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
-      logError("Frame capture failed (fb null)");
-      Serial.println("STREAM:FRAME_ERR");
+      nullFrameCount++;
+      logError("Frame capture failed (fb null) [%d/5]", nullFrameCount);
+      Serial.printf("STREAM:FRAME_ERR [%d/5]\n", nullFrameCount);
+      if (nullFrameCount >= 5) {
+        logError("CRITICAL: 5 consecutive null frames — rebooting");
+        Serial.println("[CAM] DEAD SENSOR — REBOOTING");
+        delay(200);
+        ESP.restart();
+      }
       res = ESP_FAIL; break;
     }
+    nullFrameCount = 0;                  /* healthy frame — reset */
     size_t hLen = snprintf(hdr, sizeof(hdr), PART_HDR, (unsigned)fb->len);
     res = httpd_resp_send_chunk(req, hdr, hLen);
     if (res == ESP_OK)
@@ -151,11 +160,19 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   }
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
-    logError("/capture failed — fb null");
+    nullFrameCount++;
+    logError("/capture failed — fb null [%d/5]", nullFrameCount);
+    if (nullFrameCount >= 5) {
+      logError("CRITICAL: 5 consecutive null frames — rebooting");
+      Serial.println("[CAM] DEAD SENSOR — REBOOTING");
+      delay(200);
+      ESP.restart();
+    }
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                         "Frame capture failed");
     return ESP_FAIL;
   }
+  nullFrameCount = 0;                    /* healthy frame — reset */
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -480,6 +497,7 @@ static bool initCamera() {
 /* ═══════════════════════════════════════════════════════════ */
 static bool connectWiFi() {
   WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_POWER_17dBm);     /* reduce TX power to prevent brownout */
   WiFi.setSleep(false);
   WiFi.config(CAM_IP, CAM_GW, CAM_SUB);
   WiFi.begin(ROVER_SSID, ROVER_PASS);
@@ -503,23 +521,34 @@ static bool connectWiFi() {
 }
 
 static unsigned long lastWiFiCheck = 0;
+static bool wifiReconnecting = false;
+
 static void wifiWatchdog() {
   if (millis() - lastWiFiCheck < 5000) return;
   lastWiFiCheck = millis();
-  if (WiFi.status() != WL_CONNECTED) {
-    logError("WiFi lost — attempting reconnect");
-    Serial.println("[WIFI] Lost — reconnecting…");
-    WiFi.disconnect(true, true);          /* deep HW modem purge */
-    delay(100);
-    WiFi.begin(ROVER_SSID, ROVER_PASS);
-    unsigned long t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) delay(300);
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.printf("[WIFI] Reconnected  IP: %s\n", WiFi.localIP().toString().c_str());
+
+  if (WiFi.status() == WL_CONNECTED) {
+    if (wifiReconnecting) {
+      Serial.printf("[WIFI] Reconnected  IP: %s\n",
+                    WiFi.localIP().toString().c_str());
       logError("WiFi reconnected OK");
-    } else {
-      logError("WiFi reconnect failed — will retry");
+      wifiReconnecting = false;
     }
+    return;
+  }
+
+  /* Not connected — issue reconnect (non-blocking) */
+  if (!wifiReconnecting) {
+    logError("WiFi lost — issuing non-blocking reconnect");
+    Serial.println("[WIFI] Lost — reconnecting (non-blocking)…");
+    WiFi.disconnect(true, true);          /* deep HW modem purge */
+    delay(100);                           /* brief settle only   */
+    WiFi.begin(ROVER_SSID, ROVER_PASS);
+    wifiReconnecting = true;
+  } else {
+    /* Already issued reconnect — just waiting, log progress */
+    Serial.println("[WIFI] Still reconnecting…");
+    logError("WiFi reconnect pending — will retry next cycle");
   }
 }
 
