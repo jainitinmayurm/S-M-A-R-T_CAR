@@ -68,10 +68,11 @@ static const unsigned long POST_CLEAR  = 500;   /* ms — extra drive after clea
 static const unsigned long TELEM_INT   = 500;   /* ms — telemetry interval        */
 
 /* ─── Runtime State ───────────────────────────────────────── */
-static uint8_t       curSpeed   = 200;          /* default speed level 3 */
-static bool          rthActive  = false;
+static uint8_t       curSpeed    = 200;         /* default speed level 3 */
+static bool          rthActive   = false;
 static unsigned long lastTelemMs = 0;
 static unsigned long lastUsMs    = 0;           /* ultrasonic poll timer */
+static unsigned long lastEspCmdMs = 0;          /* wire-break watchdog   */
 
 /* ══════════════════════════════════════════════════════════ */
 /*  Low-Level Motor Helpers                                   */
@@ -172,7 +173,7 @@ static long pingCm() {
   digitalWrite(US_TRIG, LOW);  delayMicroseconds(2);
   digitalWrite(US_TRIG, HIGH); delayMicroseconds(10);
   digitalWrite(US_TRIG, LOW);
-  unsigned long dur = pulseIn(US_ECHO, HIGH, 25000);  /* ~4.3 m max */
+  unsigned long dur = pulseIn(US_ECHO, HIGH, 6000);   /* ~1.0 m max — saves CPU */
   if (dur == 0) return 999;              /* no echo = far away       */
   return (long)(dur * 0.034 / 2.0);
 }
@@ -358,7 +359,16 @@ void loop() {
   /* ── Incoming commands from ESP32 ── */
   while (espSerial.available()) {
     char c = (char)espSerial.read();
-    if (c >= ' ') execCmd(c);            /* ignore control chars      */
+    if (c >= ' ') {
+      execCmd(c);
+      lastEspCmdMs = millis();            /* feed the wire-break watchdog */
+    }
+  }
+
+  /* ── Wire-break failsafe (halt if ESP32 TX wire snaps) ──── */
+  if (!rthActive && (millis() - lastEspCmdMs > 2000)) {
+    halt();
+    lastEspCmdMs = millis();              /* reset so we don't spam halt */
   }
 
   /* ── RTH obstacle scanning (every 120 ms while RTH active) ── */

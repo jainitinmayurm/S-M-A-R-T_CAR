@@ -509,7 +509,8 @@ static void wifiWatchdog() {
   if (WiFi.status() != WL_CONNECTED) {
     logError("WiFi lost — attempting reconnect");
     Serial.println("[WIFI] Lost — reconnecting…");
-    WiFi.disconnect();
+    WiFi.disconnect(true, true);          /* deep HW modem purge */
+    delay(100);
     WiFi.begin(ROVER_SSID, ROVER_PASS);
     unsigned long t0 = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) delay(300);

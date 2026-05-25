@@ -94,6 +94,10 @@ static unsigned long rthElapsed   = 0;   /* survives pause     */
 static bool          rthPaused    = false;
 static char          lastSentCmd  = 0;   /* dedup serial writes*/
 
+/* ─── Serial Receive Buffers (global to avoid heap fragmentation) ── */
+static String ardBuf;
+static String camBuf;
+
 /* ══════════════════════════════════════════════════════════ */
 /*  Forward declarations                                      */
 /* ══════════════════════════════════════════════════════════ */
@@ -146,6 +150,10 @@ void setup() {
   wsServer.onEvent(onWsEvent);
   Serial.println(F("[WS]   Listening on :81"));
 
+  /* ── Pre-allocate serial buffers to avoid heap fragmentation ── */
+  ardBuf.reserve(128);
+  camBuf.reserve(128);
+
   lastPingMs = millis();
   Serial.println(F("[BOOT] Ready.\n"));
 }
@@ -158,7 +166,6 @@ void loop() {
   wsServer.loop();
 
   /* ── Arduino serial (telemetry / handshake) ────────────── */
-  static String ardBuf;
   while (Serial2.available()) {
     char c = (char)Serial2.read();
     if (c == '\n') {
@@ -171,7 +178,6 @@ void loop() {
   }
 
   /* ── CAM serial (telemetry passthrough) ────────────────── */
-  static String camBuf;
   while (Serial1.available()) {
     char c = (char)Serial1.read();
     if (c == '\n') {

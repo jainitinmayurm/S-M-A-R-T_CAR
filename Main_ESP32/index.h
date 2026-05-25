@@ -140,6 +140,7 @@ const char index_html[] PROGMEM = R"HTML(
       <div class="top-right">
         <button type="button" class="round-btn" id="autoBtn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 7V4M12 20v-3M7 12H4M20 12h-3"/></svg></button>
         <button type="button" class="round-btn" id="rthBtn"><svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" fill="currentColor" stroke="none"/></svg></button>
+        <button type="button" class="round-btn" id="fsBtn"><svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg></button>
       </div>
 
       <!-- ── Left: Drive Joystick ────────────────── -->
@@ -217,6 +218,7 @@ const char index_html[] PROGMEM = R"HTML(
   var syncPill   = $('syncPill'),  syncS    = $('syncS');
   var batVal     = $('batVal'),    spdVal   = $('spdVal'),  tiltVal = $('tiltVal');
   var rthBtn     = $('rthBtn'),    autoBtn  = $('autoBtn'), gyroBtn = $('gyroBtn');
+  var fsBtn      = $('fsBtn');
   var gearTab    = $('gearTab'),   gearPanel= $('gearPanel');
   var camImg     = $('camStream'), camPh    = $('camPh'),   camLive = $('camLive');
   var driveJoyEl = $('driveJoy'),  steerJoyEl = $('steerJoy');
@@ -244,13 +246,12 @@ const char index_html[] PROGMEM = R"HTML(
     ws.onerror = function () { ws.close(); };
     ws.onmessage = function (ev) {
       var d = ev.data;
-      if (d.indexOf('BAT:') === 0) {
-        var parts = d.split(',');
-        for (var i = 0; i < parts.length; i++) {
-          var kv = parts[i].split(':');
-          if (kv[0] === 'BAT')   batVal.textContent = kv[1];
-          if (kv[0] === 'SPEED') spdVal.textContent = kv[1];
-        }
+      /* Robust regex parsing — tolerates garbage bytes from SoftwareSerial */
+      if (d.indexOf('BAT') !== -1) {
+        var batM = d.match(/BAT:(\d+)/);
+        var spdM = d.match(/SPEED:(\d+)/);
+        if (batM) batVal.textContent = batM[1];
+        if (spdM) spdVal.textContent = spdM[1];
         return;
       }
       if (d === 'MODE:RTH') {
@@ -489,6 +490,32 @@ const char index_html[] PROGMEM = R"HTML(
 
   /* ═══ AUTO BUTTON (cosmetic toggle) ═══════════════════════ */
   autoBtn.addEventListener('click', function () { autoBtn.classList.toggle('active'); });
+
+  /* ═══ FULLSCREEN (vendor-prefixed for mobile) ═════════════ */
+  fsBtn.addEventListener('click', function () {
+    var el = document.documentElement;
+    if (!document.fullscreenElement && !document.webkitFullscreenElement &&
+        !document.mozFullScreenElement && !document.msFullscreenElement) {
+      if (el.requestFullscreen)        el.requestFullscreen();
+      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+      else if (el.mozRequestFullScreen)    el.mozRequestFullScreen();
+      else if (el.msRequestFullscreen)     el.msRequestFullscreen();
+      fsBtn.classList.add('active');
+    } else {
+      if (document.exitFullscreen)            document.exitFullscreen();
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+      else if (document.mozCancelFullScreen)  document.mozCancelFullScreen();
+      else if (document.msExitFullscreen)     document.msExitFullscreen();
+      fsBtn.classList.remove('active');
+    }
+  });
+  /* Sync button glow when fullscreen exits via Escape key */
+  document.addEventListener('fullscreenchange', function () {
+    if (!document.fullscreenElement) fsBtn.classList.remove('active');
+  });
+  document.addEventListener('webkitfullscreenchange', function () {
+    if (!document.webkitFullscreenElement) fsBtn.classList.remove('active');
+  });
 
   /* ═══ GEAR BUTTONS ════════════════════════════════════════ */
   for (var i = 0; i < gearBtns.length; i++) {
