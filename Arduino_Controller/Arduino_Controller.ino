@@ -115,25 +115,25 @@ static void spinRight() {
 /* Diagonal — one side full speed, other side ~40 % */
 static void driveForwardLeft() {
   mFR.setSpeed(curSpeed);      mBR.setSpeed(curSpeed);
-  mFL.setSpeed(curSpeed * 0.4); mBL.setSpeed(curSpeed * 0.4);
+  mFL.setSpeed((curSpeed * 4) / 10); mBL.setSpeed((curSpeed * 4) / 10);
   mFL.run(FORWARD); mFR.run(FORWARD);
   mBL.run(FORWARD); mBR.run(FORWARD);
 }
 static void driveForwardRight() {
   mFL.setSpeed(curSpeed);      mBL.setSpeed(curSpeed);
-  mFR.setSpeed(curSpeed * 0.4); mBR.setSpeed(curSpeed * 0.4);
+  mFR.setSpeed((curSpeed * 4) / 10); mBR.setSpeed((curSpeed * 4) / 10);
   mFL.run(FORWARD); mFR.run(FORWARD);
   mBL.run(FORWARD); mBR.run(FORWARD);
 }
 static void driveBackwardLeft() {
   mFR.setSpeed(curSpeed);      mBR.setSpeed(curSpeed);
-  mFL.setSpeed(curSpeed * 0.4); mBL.setSpeed(curSpeed * 0.4);
+  mFL.setSpeed((curSpeed * 4) / 10); mBL.setSpeed((curSpeed * 4) / 10);
   mFL.run(BACKWARD); mFR.run(BACKWARD);
   mBL.run(BACKWARD); mBR.run(BACKWARD);
 }
 static void driveBackwardRight() {
   mFL.setSpeed(curSpeed);      mBL.setSpeed(curSpeed);
-  mFR.setSpeed(curSpeed * 0.4); mBR.setSpeed(curSpeed * 0.4);
+  mFR.setSpeed((curSpeed * 4) / 10); mBR.setSpeed((curSpeed * 4) / 10);
   mFL.run(BACKWARD); mFR.run(BACKWARD);
   mBL.run(BACKWARD); mBR.run(BACKWARD);
 }
@@ -179,14 +179,41 @@ static long pingCm() {
 }
 
 /* ══════════════════════════════════════════════════════════ */
-/*  IR Helpers with Timeout                                   */
+/*  Non-Blocking Detour Helpers                               */
 /* ══════════════════════════════════════════════════════════ */
+static bool abortDetour = false;
 
-/* Wait until the given IR pin reads the target state, or timeout. */
-static bool waitIR(int pin, int state, unsigned long tmo) {
+/* Poll serial for cancel commands during blocking manoeuvres */
+static void checkSerialFailsafe() {
+  while (espSerial.available()) {
+    char c = (char)espSerial.read();
+    lastEspCmdMs = millis();
+    if (c == 't' || c == 'S' || c == 'm') {
+      halt();
+      rthActive = false;
+      abortDetour = true;
+    }
+    if (c >= ' ') execCmd(c);
+  }
+}
+
+/* Non-blocking delay that checks for cancel commands */
+static bool smartDelay(unsigned long ms) {
+  unsigned long t0 = millis();
+  while (millis() - t0 < ms) {
+    checkSerialFailsafe();
+    if (abortDetour) return false;
+  }
+  return true;
+}
+
+/* Non-blocking IR wait that checks for cancel commands */
+static bool smartWaitIR(int pin, int state, unsigned long tmo) {
   unsigned long t0 = millis();
   while (digitalRead(pin) != state) {
-    if (millis() - t0 > tmo) return false;       /* timed out */
+    checkSerialFailsafe();
+    if (abortDetour) return false;
+    if (millis() - t0 > tmo) return false;
   }
   return true;
 }
@@ -216,32 +243,27 @@ static bool waitIR(int pin, int state, unsigned long tmo) {
  */
 
 static void activeDetour() {
+  abortDetour = false;
+
   /* ── 1. Halt & signal pause ── */
   halt();
   espSerial.println("P");
-  delay(250);
+  if (!smartDelay(250)) return;
 
-  /* ── 2. Servo sweep (attach → sweep → detach to prevent jitter) ── */
-  scanServo.attach(SERVO_PIN);
-  scanServo.write(90);  delay(350);
+  /* ── 2. Servo sweep ── */
+  scanServo.write(90);  if (!smartDelay(350)) return;
 
-  scanServo.write(0);   delay(500);       /* look LEFT  */
+  scanServo.write(0);   if (!smartDelay(500)) return;
   long distLeft = pingCm();
 
-  scanServo.write(180); delay(600);       /* look RIGHT (extra travel) */
+  scanServo.write(180); if (!smartDelay(600)) return;
   long distRight = pingCm();
 
-  scanServo.write(90);  delay(300);       /* re-centre */
-  scanServo.detach();
+  scanServo.write(90);  if (!smartDelay(300)) return;
 
   /* ── Decide open side ── */
   bool goRight = (distRight >= distLeft);
 
-  /*  Symmetry variables:
-   *    Turn_A  = initial dodge direction
-   *    Turn_B  = opposite direction
-   *    activeIR = IR sensor on the OBSTACLE side
-   */
   int activeIR;
   void (*turnA90)();
   void (*turnB90)();
@@ -249,58 +271,55 @@ static void activeDetour() {
   if (goRight) {
     turnA90  = turnRight90;
     turnB90  = turnLeft90;
-    activeIR = IR_LEFT;                  /* obstacle is on our left */
+    activeIR = IR_LEFT;
   } else {
     turnA90  = turnLeft90;
     turnB90  = turnRight90;
-    activeIR = IR_RIGHT;                 /* obstacle is on our right */
+    activeIR = IR_RIGHT;
   }
 
   /* ── 3. Clear Width ── */
   turnA90();
-  delay(150);
+  if (!smartDelay(150)) return;
 
   unsigned long widthStart = millis();
   driveForward();
 
-  /* Wait for IR LOW (we detect the obstacle beside us) */
-  waitIR(activeIR, LOW, IR_TIMEOUT);
-  /* Wait for IR HIGH (we've passed the obstacle) */
-  waitIR(activeIR, HIGH, IR_TIMEOUT);
+  if (!smartWaitIR(activeIR, LOW, IR_TIMEOUT)) { halt(); return; }
+  if (!smartWaitIR(activeIR, HIGH, IR_TIMEOUT)) { halt(); return; }
 
-  delay(POST_CLEAR);                     /* 500 ms extra safety margin */
+  if (!smartDelay(POST_CLEAR)) return;
   halt();
   unsigned long widthDuration = millis() - widthStart;
-  delay(150);
+  if (!smartDelay(150)) return;
 
   /* ── 4. Clear Length ── */
   turnB90();
-  delay(150);
+  if (!smartDelay(150)) return;
 
   driveForward();
 
-  /* Wait for IR LOW then HIGH (pass the obstacle's length) */
-  waitIR(activeIR, LOW, IR_TIMEOUT);
-  waitIR(activeIR, HIGH, IR_TIMEOUT);
+  if (!smartWaitIR(activeIR, LOW, IR_TIMEOUT)) { halt(); return; }
+  if (!smartWaitIR(activeIR, HIGH, IR_TIMEOUT)) { halt(); return; }
 
-  delay(POST_CLEAR);
+  if (!smartDelay(POST_CLEAR)) return;
   halt();
-  delay(150);
+  if (!smartDelay(150)) return;
 
   /* ── 5. Rejoin Line ── */
   turnB90();
-  delay(150);
+  if (!smartDelay(150)) return;
 
   driveForward();
-  delay(widthDuration);                  /* mirror the width exactly */
+  if (!smartDelay(widthDuration)) return;
   halt();
-  delay(150);
+  if (!smartDelay(150)) return;
 
   /* ── 6. Resume Vector ── */
-  turnA90();                             /* now facing original heading */
-  delay(150);
+  turnA90();
+  if (!smartDelay(150)) return;
 
-  /* Flush stale serial commands accumulated during blocking detour */
+  /* Flush stale serial commands accumulated during detour */
   while (espSerial.available()) espSerial.read();
 
   /* Signal ESP32 to resume RTH stack timer */
@@ -338,11 +357,10 @@ void setup() {
   pinMode(US_ECHO, INPUT);
   digitalWrite(US_TRIG, LOW);
 
-  /* Servo — attach, centre, then detach to prevent jitter */
+  /* Servo — attach and centre (kept attached for holding torque) */
   scanServo.attach(SERVO_PIN);
   scanServo.write(90);
   delay(500);
-  scanServo.detach();
 
   /* Motors — default speed, stopped */
   setAllSpeed(curSpeed);
@@ -359,16 +377,15 @@ void loop() {
   /* ── Incoming commands from ESP32 ── */
   while (espSerial.available()) {
     char c = (char)espSerial.read();
-    if (c >= ' ') {
-      execCmd(c);
-      lastEspCmdMs = millis();            /* feed the wire-break watchdog */
-    }
+    lastEspCmdMs = millis();              /* ANY byte feeds the watchdog */
+    if (c >= ' ') execCmd(c);
   }
 
-  /* ── Wire-break failsafe (halt if ESP32 TX wire snaps) ──── */
-  if (!rthActive && (millis() - lastEspCmdMs > 2000)) {
+  /* ── Wire-break failsafe (universal — halts even during RTH) ── */
+  if (millis() - lastEspCmdMs > 2500) {
     halt();
-    lastEspCmdMs = millis();              /* reset so we don't spam halt */
+    rthActive = false;
+    lastEspCmdMs = millis();
   }
 
   /* ── RTH obstacle scanning (every 120 ms while RTH active) ── */

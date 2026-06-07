@@ -94,6 +94,9 @@ static unsigned long rthElapsed   = 0;   /* survives pause     */
 static bool          rthPaused    = false;
 static char          lastSentCmd  = 0;   /* dedup serial writes*/
 
+/* ─── RTH Kinematic Drift Compensation ────────────────────── */
+static const float RTH_BATTERY_COMPENSATION = 1.12;
+
 /* ─── Serial Receive Buffers (global to avoid heap fragmentation) ── */
 static String ardBuf;
 static String camBuf;
@@ -204,6 +207,13 @@ void loop() {
 
   /* ── RTH engine tick ───────────────────────────────────── */
   if (roverMode == RTH) rthTick();
+
+  /* ── Hardware UART heartbeat to Arduino (wire-break detection) ── */
+  static unsigned long lastUartHbMs = 0;
+  if (millis() - lastUartHbMs > 1000) {
+    lastUartHbMs = millis();
+    Serial2.write('\n');
+  }
 }
 
 /* ══════════════════════════════════════════════════════════ */
@@ -306,10 +316,9 @@ static bool isMoveCmd(char c) {
 static void pushMove(char c, unsigned long dur) {
   if (dur < 60) return;                  /* discard noise */
   if (sp >= STACK_CAP - 1) {
-    /* Shift down — drop oldest entry */
-    for (int i = 0; i < STACK_CAP - 1; i++) stack[i] = stack[i + 1];
-    sp = STACK_CAP - 2;                  /* will be incremented below */
-    Serial.println(F("[STK] Full — oldest entry dropped"));
+    /* Clamp — refuse to overwrite stack[0] (true home origin) */
+    Serial.println(F("[STK] FULL — memory clamped, movement ignored"));
+    return;
   }
   sp++;
   stack[sp].cmd = c;
@@ -390,8 +399,9 @@ static void rthTick() {
   if (rthPaused) return;                 /* Arduino handling obstacle */
 
   unsigned long total = rthElapsed + (millis() - rthStepStart);
+  unsigned long targetTime = (unsigned long)(stack[rthIdx].ms * RTH_BATTERY_COMPENSATION);
 
-  if (total >= stack[rthIdx].ms) {
+  if (total >= targetTime) {
     /* Current step finished — advance */
     rthIdx--;
     rthElapsed = 0;

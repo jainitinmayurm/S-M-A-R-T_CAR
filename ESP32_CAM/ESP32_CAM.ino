@@ -92,6 +92,9 @@ static unsigned long bootTime = 0;
 static httpd_handle_t stream_httpd = NULL;
 static httpd_handle_t dash_httpd   = NULL;
 
+/* ─── FreeRTOS Mutex for Camera DMA Protection ────────────── */
+static SemaphoreHandle_t camMutex = NULL;
+
 /* ═══════════════════════════════════════════════════════════ */
 /*  MJPEG Stream  (port 81 — /stream)                         */
 /* ═══════════════════════════════════════════════════════════ */
@@ -121,8 +124,13 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
   char hdr[100];
   while (true) {
+    if (xSemaphoreTake(camMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+      logError("Stream mutex timeout — skipping frame");
+      res = ESP_FAIL; break;
+    }
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
+      xSemaphoreGive(camMutex);
       nullFrameCount++;
       logError("Frame capture failed (fb null) [%d/5]", nullFrameCount);
       Serial.printf("STREAM:FRAME_ERR [%d/5]\n", nullFrameCount);
@@ -140,6 +148,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     if (res == ESP_OK)
       res = httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len);
     esp_camera_fb_return(fb);
+    xSemaphoreGive(camMutex);
     if (res != ESP_OK) break;
     frameCount++;
   }
@@ -158,8 +167,15 @@ static esp_err_t capture_handler(httpd_req_t *req) {
                         "Camera not initialised");
     return ESP_FAIL;
   }
+  if (xSemaphoreTake(camMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    logError("/capture mutex timeout");
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Camera busy — mutex timeout");
+    return ESP_FAIL;
+  }
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
+    xSemaphoreGive(camMutex);
     nullFrameCount++;
     logError("/capture failed — fb null [%d/5]", nullFrameCount);
     if (nullFrameCount >= 5) {
@@ -178,6 +194,7 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   esp_err_t res = httpd_resp_send(req, (const char*)fb->buf, fb->len);
   esp_camera_fb_return(fb);
+  xSemaphoreGive(camMutex);
   return res;
 }
 
@@ -578,6 +595,7 @@ void setup() {
   digitalWrite(FLASH_GPIO_NUM, LOW);
 
   /* 1. Camera */
+  camMutex = xSemaphoreCreateMutex();
   camReady = initCamera();
   if (!camReady) {
     Serial.println(F("[WARN] Camera failed — dashboard will show diagnostics"));
