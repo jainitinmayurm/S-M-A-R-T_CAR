@@ -218,6 +218,27 @@ static bool smartWaitIR(int pin, int state, unsigned long tmo) {
   return true;
 }
 
+/* Send a message to ESP32 and wait for a single-char ACK */
+static bool sendAndWaitForAck(const char* msg, char ack, unsigned long timeout) {
+  espSerial.println(msg);
+  unsigned long t0 = millis();
+  while (millis() - t0 < timeout) {
+    if (espSerial.available()) {
+      char c = (char)espSerial.read();
+      lastEspCmdMs = millis();
+      if (c == ack) return true;
+      if (c == 't' || c == 'S' || c == 'm') {
+        halt();
+        rthActive = false;
+        abortDetour = true;
+        return false;
+      }
+      if (c >= ' ') execCmd(c);
+    }
+  }
+  return false;                          /* timed out — no ACK */
+}
+
 /* ══════════════════════════════════════════════════════════ */
 /*  Active Detour — Fully Dynamic & Symmetrical               */
 /* ══════════════════════════════════════════════════════════ */
@@ -245,10 +266,9 @@ static bool smartWaitIR(int pin, int state, unsigned long tmo) {
 static void activeDetour() {
   abortDetour = false;
 
-  /* ── 1. Halt & signal pause ── */
+  /* ── 1. Halt & signal pause (with ACK) ── */
   halt();
-  espSerial.println("P");
-  if (!smartDelay(250)) return;
+  if (!sendAndWaitForAck("P", 'p', 2000)) return;
 
   /* ── 2. Servo sweep ── */
   scanServo.write(90);  if (!smartDelay(350)) return;
@@ -306,24 +326,34 @@ static void activeDetour() {
   halt();
   if (!smartDelay(150)) return;
 
-  /* ── 5. Rejoin Line ── */
+  /* ── 5. Rejoin Line (with kamikaze prevention) ── */
   turnB90();
   if (!smartDelay(150)) return;
 
   driveForward();
-  if (!smartDelay(widthDuration)) return;
+  {
+    unsigned long t0 = millis();
+    while (millis() - t0 < widthDuration) {
+      checkSerialFailsafe();
+      if (abortDetour) return;
+      if (pingCm() < OBSTACLE_CM) {
+        halt();
+        return;                          /* abort — wall ahead */
+      }
+    }
+  }
   halt();
   if (!smartDelay(150)) return;
 
-  /* ── 6. Resume Vector ── */
+  /* ── 6. Resume Vector (with ACK) ── */
   turnA90();
   if (!smartDelay(150)) return;
 
   /* Flush stale serial commands accumulated during detour */
   while (espSerial.available()) espSerial.read();
 
-  /* Signal ESP32 to resume RTH stack timer */
-  espSerial.println("R");
+  /* Signal ESP32 to resume RTH stack timer (with handshake) */
+  sendAndWaitForAck("R", 'r', 2000);
 }
 
 /* ══════════════════════════════════════════════════════════ */
@@ -357,9 +387,9 @@ void setup() {
   pinMode(US_ECHO, INPUT);
   digitalWrite(US_TRIG, LOW);
 
-  /* Servo — attach and centre (kept attached for holding torque) */
-  scanServo.attach(SERVO_PIN);
+  /* Servo — write angle BEFORE attach to prevent startup jerk */
   scanServo.write(90);
+  scanServo.attach(SERVO_PIN);
   delay(500);
 
   /* Motors — default speed, stopped */

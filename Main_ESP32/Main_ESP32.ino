@@ -290,6 +290,7 @@ static void handleArduinoLine(const String &line) {
   if (line == "P" && roverMode == RTH) {
     rthPaused = true;
     rthElapsed += (millis() - rthStepStart);
+    Serial2.write('p');                  /* ACK pause to Arduino */
     Serial.println(F("[RTH] Paused (obstacle)"));
     return;
   }
@@ -297,6 +298,7 @@ static void handleArduinoLine(const String &line) {
   if (line == "R" && roverMode == RTH && rthPaused) {
     rthPaused    = false;
     rthStepStart = millis();
+    Serial2.write('r');                  /* ACK resume to Arduino */
     toArduino(rthCmd);                   /* re-issue movement  */
     Serial.println(F("[RTH] Resumed"));
     return;
